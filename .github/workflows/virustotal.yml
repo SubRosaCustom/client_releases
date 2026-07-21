@@ -5,7 +5,7 @@ on:
     types: [published]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   scan:
@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$VT_API_KEY"
+          : > virustotal-reports.md
 
           for file in artifacts/srcustom.dll artifacts/libsrcustom.so; do
             response=$(curl --fail-with-body --retry 3 --retry-delay 5 \
@@ -57,5 +58,22 @@ jobs:
               echo "VirusTotal: https://www.virustotal.com/gui/file/$sha256"
               echo "Result: \`$stats\`"
               echo
-            } >> "$GITHUB_STEP_SUMMARY"
+            } | tee -a "$GITHUB_STEP_SUMMARY" >> virustotal-reports.md
           done
+
+      - name: Add VirusTotal reports to release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-notes.md
+          sed '/<!-- virustotal-reports:start -->/,/<!-- virustotal-reports:end -->/d' release-notes.md > updated-notes.md
+          {
+            echo
+            echo '<!-- virustotal-reports:start -->'
+            echo '## VirusTotal reports'
+            echo
+            cat virustotal-reports.md
+            echo '<!-- virustotal-reports:end -->'
+          } >> updated-notes.md
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes-file updated-notes.md
