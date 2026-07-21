@@ -43,26 +43,45 @@ jobs:
           } > virustotal-reports.md
 
           for file in artifacts/srcustom.dll artifacts/libsrcustom.so; do
-            response=$(curl --fail-with-body --retry 3 --retry-delay 5 \
+            sha256=$(sha256sum "$file" | awk '{print $1}')
+            upload_body=$(mktemp)
+            upload_status=$(curl --silent --show-error --retry 3 --retry-delay 5 \
+              --output "$upload_body" --write-out '%{http_code}' \
               --header "x-apikey: $VT_API_KEY" \
               --form "file=@$file" \
               https://www.virustotal.com/api/v3/files)
-            analysis_id=$(jq -er '.data.id' <<<"$response")
 
-            for attempt in {1..20}; do
-              sleep 30
-              response=$(curl --fail-with-body --retry 3 --retry-delay 5 \
-                --header "x-apikey: $VT_API_KEY" \
-                "https://www.virustotal.com/api/v3/analyses/$analysis_id")
-              status=$(jq -er '.data.attributes.status' <<<"$response")
-              [[ "$status" == completed ]] && break
-              [[ "$attempt" == 20 ]] && { echo "VirusTotal analysis timed out for $file" >&2; exit 1; }
-            done
+            case "$upload_status" in
+              200)
+                analysis_id=$(jq -er '.data.id' "$upload_body")
+                rm -f "$upload_body"
+                for attempt in {1..20}; do
+                  sleep 30
+                  response=$(curl --silent --show-error --fail-with-body --retry 3 --retry-delay 5 \
+                    --header "x-apikey: $VT_API_KEY" \
+                    "https://www.virustotal.com/api/v3/analyses/$analysis_id")
+                  status=$(jq -er '.data.attributes.status' <<<"$response")
+                  [[ "$status" == completed ]] && break
+                  [[ "$attempt" == 20 ]] && { echo "VirusTotal analysis timed out for $file" >&2; exit 1; }
+                done
+                ;;
+              409)
+                rm -f "$upload_body"
+                ;;
+              *)
+                echo "VirusTotal upload failed for $file (HTTP $upload_status)" >&2
+                jq -r '.error.message // empty' "$upload_body" >&2 || true
+                rm -f "$upload_body"
+                exit 1
+                ;;
+            esac
 
-            sha256=$(sha256sum "$file" | awk '{print $1}')
-            malicious=$(jq -er '.data.attributes.stats.malicious // 0' <<<"$response")
-            suspicious=$(jq -er '.data.attributes.stats.suspicious // 0' <<<"$response")
-            undetected=$(jq -er '.data.attributes.stats.undetected // 0' <<<"$response")
+            response=$(curl --silent --show-error --fail-with-body --retry 3 --retry-delay 5 \
+              --header "x-apikey: $VT_API_KEY" \
+              "https://www.virustotal.com/api/v3/files/$sha256")
+            malicious=$(jq -er '.data.attributes.last_analysis_stats.malicious // 0' <<<"$response")
+            suspicious=$(jq -er '.data.attributes.last_analysis_stats.suspicious // 0' <<<"$response")
+            undetected=$(jq -er '.data.attributes.last_analysis_stats.undetected // 0' <<<"$response")
             printf '| `%s` | %s malicious, %s suspicious, %s undetected | `%s` | [View report](https://www.virustotal.com/gui/file/%s) |\n' \
               "$(basename "$file")" "$malicious" "$suspicious" "$undetected" "$sha256" "$sha256" \
               >> virustotal-reports.md
