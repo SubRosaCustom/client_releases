@@ -37,10 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$VT_API_KEY"
-          {
-            echo '| File | Detection result | SHA-256 | Report |'
-            echo '| --- | --- | --- | --- |'
-          } > virustotal-reports.md
+          : > virustotal-reports.md
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets > release-assets.json
 
           for file in artifacts/srcustom.dll artifacts/libsrcustom.so; do
             sha256=$(sha256sum "$file" | awk '{print $1}')
@@ -81,10 +79,18 @@ jobs:
               "https://www.virustotal.com/api/v3/files/$sha256")
             malicious=$(jq -er '.data.attributes.last_analysis_stats.malicious // 0' <<<"$response")
             suspicious=$(jq -er '.data.attributes.last_analysis_stats.suspicious // 0' <<<"$response")
-            undetected=$(jq -er '.data.attributes.last_analysis_stats.undetected // 0' <<<"$response")
-            printf '| `%s` | %s malicious, %s suspicious, %s undetected | `%s` | [View report](https://www.virustotal.com/gui/file/%s) |\n' \
-              "$(basename "$file")" "$malicious" "$suspicious" "$undetected" "$sha256" "$sha256" \
-              >> virustotal-reports.md
+            asset_name=$(basename "$file")
+            asset_url=$(jq -er --arg name "$asset_name" '.assets[] | select(.name == $name) | .url' release-assets.json)
+            {
+              echo "## [$asset_name]($asset_url)"
+              echo
+              echo "\`$sha256\`"
+              echo
+              echo "[VirusTotal report](https://www.virustotal.com/gui/file/$sha256)"
+              echo
+              echo "Detection: $malicious malicious, $suspicious suspicious"
+              echo
+            } >> virustotal-reports.md
           done
 
           cat virustotal-reports.md >> "$GITHUB_STEP_SUMMARY"
